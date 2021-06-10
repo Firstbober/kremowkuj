@@ -7,28 +7,6 @@ use std::path::Path;
 use std::process::exit;
 
 #[derive(Copy, Clone, Debug)]
-enum Number {
-    Integer(u64),
-    Floating(f64),
-}
-
-impl Number {
-    fn force_u64(self: Self) -> u64 {
-        match self {
-            Self::Integer(int) => int,
-            Self::Floating(floating) => floating.floor() as u64,
-        }
-    }
-
-    fn force_f64(self: Self) -> f64 {
-        match self {
-            Self::Integer(int) => int as f64,
-            Self::Floating(floating) => floating,
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug)]
 enum Instruction {
     // Stack
     Pchnij(u64),
@@ -58,6 +36,7 @@ enum Instruction {
     // Comparisons
     NieL,
     Rowne,
+    RowneZ,
 
     MniejC,
     MniejZ,
@@ -70,6 +49,8 @@ enum Instruction {
     I,
     Lub,
     XLub,
+    PrzesunL,
+    PrzesunR,
 
     // PC register manipulation
     IdzDo(u64),
@@ -112,13 +93,6 @@ struct Procedure {
     code: Vec<Instruction>,
 }
 
-#[derive(Debug)]
-struct CallFrame {
-    bottom: u64,
-    pc: u64,
-    proc: Procedure,
-}
-
 fn read_lines<P>(filename: P) -> io::Result<io::Lines<io::BufReader<File>>>
 where
     P: AsRef<Path>,
@@ -127,8 +101,7 @@ where
     Ok(io::BufReader::new(file).lines())
 }
 
-type NativeProceduresMap =
-    HashMap<u64, Box<dyn Fn(&mut VecDeque<Number>, &mut VecDeque<Vec<Number>>)>>;
+type NativeProceduresMap = HashMap<u64, Box<dyn Fn(&mut VecDeque<u64>, &mut VecDeque<Vec<u64>>)>>;
 
 fn resolve_number(number: &str, interpret_as_dec: bool) -> Result<u64, &str> {
     let mut number = number.to_owned();
@@ -326,6 +299,7 @@ fn get_procedures(path: &str) -> Vec<Procedure> {
                 // Comparisons
                 "NIE.L" => Instruction::NieL,
                 "RÓWNE" => Instruction::Rowne,
+                "RÓWNE.Z" => Instruction::RowneZ,
 
                 "MNIEJ.C" => Instruction::MniejC,
                 "MNIEJ.Z" => Instruction::MniejZ,
@@ -338,6 +312,8 @@ fn get_procedures(path: &str) -> Vec<Procedure> {
                 "I" => Instruction::I,
                 "LUB" => Instruction::Lub,
                 "XLUB" => Instruction::XLub,
+                "PRZESUŃ.L" => Instruction::PrzesunL,
+                "PRZESUŃ.R" => Instruction::PrzesunR,
 
                 // PC register manipulation
                 "IDŹDO" => {
@@ -367,28 +343,20 @@ fn get_procedures(path: &str) -> Vec<Procedure> {
     procedures
 }
 
-fn push_call(call_stack: &mut VecDeque<CallFrame>, frame: CallFrame) {
-    call_stack.push_back(frame);
-}
-
-fn pop_call(call_stack: &mut VecDeque<CallFrame>) -> CallFrame {
-    call_stack.pop_back().unwrap()
-}
-
 macro_rules! cvm_arithmetics_u64 {
     ($stack:expr, $op:tt) => {
-        let y = $stack.pop_back().unwrap().force_u64();
-        let x = $stack.pop_back().unwrap().force_u64();
-        $stack.push_back(Number::Integer(x $op y));
+        let y = $stack.pop_back().unwrap();
+        let x = $stack.pop_back().unwrap();
+        $stack.push_back(x $op y);
         ()
     };
 }
 
 macro_rules! cvm_arithmetics_f64 {
     ($stack:expr, $op:tt) => {
-        let y = $stack.pop_back().unwrap().force_f64();
-        let x = $stack.pop_back().unwrap().force_f64();
-        $stack.push_back(Number::Floating(x $op y));
+        let y = f64::from_bits($stack.pop_back().unwrap());
+        let x = f64::from_bits($stack.pop_back().unwrap());
+        $stack.push_back((x $op y).to_bits());
         ()
     };
 }
@@ -396,15 +364,14 @@ macro_rules! cvm_arithmetics_f64 {
 fn execute_procedure(
     procedure: &Procedure,
     procedures: &Vec<Procedure>,
-    stack: &mut VecDeque<Number>,
+    stack: &mut VecDeque<u64>,
     bottom: u64,
-    call_stack: &mut Vec<CallFrame>,
     native_procedures: &NativeProceduresMap,
-    allocation_array: &mut VecDeque<Vec<Number>>,
+    allocation_array: &mut VecDeque<Vec<u64>>,
 ) {
     let mut pc: u64 = 0;
     let mut continue_execution = true;
-    let mut bottom = bottom;
+    let bottom = bottom;
 
     while continue_execution {
         let instruction = procedure.code[pc as usize];
@@ -413,7 +380,7 @@ fn execute_procedure(
         match instruction {
             // Stack
             Instruction::Pchnij(value) => {
-                stack.push_back(Number::Integer(value));
+                stack.push_back(value);
             }
             Instruction::Usun => drop(stack.pop_back()),
             Instruction::ZmiennaK(index) => {
@@ -463,77 +430,86 @@ fn execute_procedure(
             Instruction::JakoCZ => {
                 let num = stack.pop_back().unwrap();
 
-                match num {
-                    Number::Integer(int) => stack.push_back(Number::Floating(int as f64)),
-                    Number::Floating(_) => stack.push_back(num),
-                }
+                stack.push_back((num as f64).to_bits());
             }
             Instruction::JakoZC => {
                 let num = stack.pop_back().unwrap();
 
-                match num {
-                    Number::Integer(_) => stack.push_back(num),
-                    Number::Floating(floating) => stack.push_back(Number::Integer(floating as u64)),
-                }
+                stack.push_back(f64::from_bits(num).floor() as u64);
             }
 
             // Comparisons
             Instruction::NieL => {
                 let x = stack.pop_back().unwrap();
-                if x.force_u64() == 0 {
-                    stack.push_back(Number::Integer(1));
+                if x == 0 {
+                    stack.push_back(1);
                 } else {
-                    stack.push_back(Number::Integer(0));
+                    stack.push_back(0);
                 }
             }
             Instruction::Rowne => {
                 let y = stack.pop_back().unwrap();
                 let x = stack.pop_back().unwrap();
-                stack.push_back(Number::Integer((x.force_u64() == y.force_u64()) as u64));
+                stack.push_back((x == y) as u64);
+            }
+            Instruction::RowneZ => {
+                let y = f64::from_bits(stack.pop_back().unwrap());
+                let x = f64::from_bits(stack.pop_back().unwrap());
+                stack.push_back((x == y) as u64);
             }
 
             Instruction::MniejC => {
-                let y = stack.pop_back().unwrap().force_u64();
-                let x = stack.pop_back().unwrap().force_u64();
-                stack.push_back(Number::Integer((x < y) as u64));
+                let y = stack.pop_back().unwrap();
+                let x = stack.pop_back().unwrap();
+                stack.push_back((x < y) as u64);
             }
             Instruction::MniejZ => {
-                let y = stack.pop_back().unwrap().force_f64();
-                let x = stack.pop_back().unwrap().force_f64();
-                stack.push_back(Number::Integer((x < y) as u64));
+                let y = stack.pop_back().unwrap();
+                let x = stack.pop_back().unwrap();
+                stack.push_back((x < y) as u64);
             }
 
             Instruction::MNrowC => {
-                let y = stack.pop_back().unwrap().force_u64();
-                let x = stack.pop_back().unwrap().force_u64();
-                stack.push_back(Number::Integer((x <= y) as u64));
+                let y = stack.pop_back().unwrap();
+                let x = stack.pop_back().unwrap();
+                stack.push_back((x <= y) as u64);
             }
             Instruction::MNrowZ => {
-                let y = stack.pop_back().unwrap().force_f64();
-                let x = stack.pop_back().unwrap().force_f64();
-                stack.push_back(Number::Integer((x <= y) as u64));
+                let y = stack.pop_back().unwrap();
+                let x = stack.pop_back().unwrap();
+                stack.push_back((x <= y) as u64);
             }
 
             // Bitwise operations
             Instruction::NieB => {
-                let x = stack.pop_back().unwrap().force_u64();
-                stack.push_back(Number::Integer(!x));
+                let x = stack.pop_back().unwrap();
+                stack.push_back(!x);
             }
             Instruction::I => {
-                let y = stack.pop_back().unwrap().force_u64();
-                let x = stack.pop_back().unwrap().force_u64();
-                stack.push_back(Number::Integer(x & y));
+                let y = stack.pop_back().unwrap();
+                let x = stack.pop_back().unwrap();
+                stack.push_back(x & y);
             }
             Instruction::Lub => {
-                let y = stack.pop_back().unwrap().force_u64();
-                let x = stack.pop_back().unwrap().force_u64();
-                stack.push_back(Number::Integer(x | y));
+                let y = stack.pop_back().unwrap();
+                let x = stack.pop_back().unwrap();
+                stack.push_back(x | y);
             }
             Instruction::XLub => {
-                let y = stack.pop_back().unwrap().force_u64();
-                let x = stack.pop_back().unwrap().force_u64();
-                stack.push_back(Number::Integer(x ^ y));
+                let y = stack.pop_back().unwrap();
+                let x = stack.pop_back().unwrap();
+                stack.push_back(x ^ y);
             }
+            Instruction::PrzesunL => {
+                let y = stack.pop_back().unwrap();
+                let x = stack.pop_back().unwrap();
+                stack.push_back(x << y);
+            },
+            Instruction::PrzesunR => {
+                let y = stack.pop_back().unwrap();
+                let x = stack.pop_back().unwrap();
+                stack.push_back(x >> y);
+            },
 
             // PC register manipulation
             Instruction::IdzDo(new_pc) => {
@@ -541,7 +517,7 @@ fn execute_procedure(
                 pc = new_pc;
             }
             Instruction::IdzDoZe(new_pc) => {
-                let x = stack.pop_back().unwrap().force_u64();
+                let x = stack.pop_back().unwrap();
                 pc -= 1;
 
                 if x == 0 {
@@ -549,7 +525,7 @@ fn execute_procedure(
                 }
             }
             Instruction::IdzDoNz(new_pc) => {
-                let x = stack.pop_back().unwrap().force_u64();
+                let x = stack.pop_back().unwrap();
                 pc -= 1;
 
                 if x != 0 {
@@ -557,17 +533,6 @@ fn execute_procedure(
                 }
             }
             Instruction::Wywolaj(proc_idx) => {
-                /*
-                push_call(
-                    call_stack,
-                    CallFrame {
-                        bottom: bottom,
-                        pc: pc,
-                        proc: procedure.clone(),
-                    },
-                );
-                */
-
                 let mut new_proc: Option<&Procedure> = None;
 
                 for procedure in procedures {
@@ -587,7 +552,6 @@ fn execute_procedure(
                             procedures,
                             stack,
                             bottom + new_proc.parameter_count,
-                            call_stack,
                             native_procedures,
                             allocation_array,
                         );
@@ -617,7 +581,7 @@ fn execute_procedure(
 
                 native_procedures.get(&nat_proc).unwrap()(stack, allocation_array);
             }
-            Instruction::BrakOperacji => unimplemented!(),
+            Instruction::BrakOperacji => unimplemented!()
         }
     }
 
@@ -644,7 +608,7 @@ fn get_stdin_input() -> String {
     buffer
 }
 
-fn peek(stack: &VecDeque<Number>, n: usize) -> Number {
+fn peek(stack: &VecDeque<u64>, n: usize) -> u64 {
     *stack.get((stack.len() - 1) - n).unwrap()
 }
 
@@ -653,7 +617,7 @@ fn register_natproc_io(native_procedures: &mut NativeProceduresMap) {
         native_procedures,
         ReservedNativeProcedures::PutC as u64,
         |stack, _| {
-            print!("{}", peek(stack, 0).force_u64());
+            print!("{}", peek(stack, 0));
         }
     );
 
@@ -661,7 +625,7 @@ fn register_natproc_io(native_procedures: &mut NativeProceduresMap) {
         native_procedures,
         ReservedNativeProcedures::PutZ as u64,
         |stack, _| {
-            print!("{}", peek(stack, 0).force_f64());
+            print!("{}", f64::from_bits(peek(stack, 0)));
         }
     );
 
@@ -671,7 +635,7 @@ fn register_natproc_io(native_procedures: &mut NativeProceduresMap) {
         |stack, _| {
             print!(
                 "{}",
-                char::from_u32(peek(stack, 0).force_u64() as u32).unwrap()
+                char::from_u32(peek(stack, 0) as u32).unwrap()
             );
         }
     );
@@ -682,7 +646,7 @@ fn register_natproc_io(native_procedures: &mut NativeProceduresMap) {
         |stack, _| {
             match get_stdin_input().trim().parse::<u64>() {
                 Ok(value) => {
-                    stack.push_back(Number::Integer(value));
+                    stack.push_back(value);
                 }
                 Err(_) => {
                     println!("Runtime error: got invalid input, expected u64");
@@ -698,7 +662,7 @@ fn register_natproc_io(native_procedures: &mut NativeProceduresMap) {
         |stack, _| {
             match get_stdin_input().trim().parse::<f64>() {
                 Ok(value) => {
-                    stack.push_back(Number::Floating(value));
+                    stack.push_back(value.to_bits());
                 }
                 Err(_) => {
                     println!("Runtime error: got invalid input, expected f64");
@@ -718,7 +682,7 @@ fn register_natproc_io(native_procedures: &mut NativeProceduresMap) {
                 input = get_stdin_input();
             }
 
-            stack.push_back(Number::Integer(input.chars().nth(0).unwrap() as u64));
+            stack.push_back(input.chars().nth(0).unwrap() as u64);
         }
     );
 }
@@ -727,17 +691,17 @@ fn register_natproc_memory(native_procedures: &mut NativeProceduresMap) {
         native_procedures,
         ReservedNativeProcedures::Alloc as u64,
         |stack, alloc_array| {
-            let to_alloc = peek(stack, 0).force_u64();
+            let to_alloc = peek(stack, 0);
 
-            let mut blocks: Vec<Number> = Vec::new();
+            let mut blocks: Vec<u64> = Vec::new();
 
             for _ in 0..to_alloc {
-                blocks.push(Number::Integer(0));
+                blocks.push(0);
             }
 
             alloc_array.push_back(blocks);
 
-            stack.push_back(Number::Integer((alloc_array.len() - 1) as u64));
+            stack.push_back((alloc_array.len() - 1) as u64);
         }
     );
 
@@ -745,7 +709,7 @@ fn register_natproc_memory(native_procedures: &mut NativeProceduresMap) {
         native_procedures,
         ReservedNativeProcedures::Free as u64,
         |stack, alloc_array| {
-            let alloc_addr = peek(stack, 0).force_u64();
+            let alloc_addr = peek(stack, 0);
             alloc_array.remove(alloc_addr as usize);
         }
     );
@@ -754,8 +718,8 @@ fn register_natproc_memory(native_procedures: &mut NativeProceduresMap) {
         native_procedures,
         ReservedNativeProcedures::Read as u64,
         |stack, alloc_array| {
-            let idx = peek(stack, 0).force_u64() as usize;
-            let addr = peek(stack, 1).force_u64() as usize;
+            let idx = peek(stack, 0) as usize;
+            let addr = peek(stack, 1) as usize;
 
             stack.push_back(alloc_array[addr][idx]);
         }
@@ -766,8 +730,8 @@ fn register_natproc_memory(native_procedures: &mut NativeProceduresMap) {
         ReservedNativeProcedures::Write as u64,
         |stack, alloc_array| {
             let value = peek(stack, 0);
-            let idx = peek(stack, 1).force_u64() as usize;
-            let addr = peek(stack, 2).force_u64() as usize;
+            let idx = peek(stack, 1) as usize;
+            let addr = peek(stack, 2) as usize;
 
             alloc_array[addr][idx] = value;
         }
@@ -778,11 +742,11 @@ fn register_natproc_strings(native_procedures: &mut NativeProceduresMap) {
         native_procedures,
         ReservedNativeProcedures::Print as u64,
         |stack, alloc_array| {
-            let addr = peek(stack, 0).force_u64() as usize;
+            let addr = peek(stack, 0) as usize;
             let mut string: String = String::new();
 
             for block in alloc_array[addr].clone() {
-                let bytes = block.force_u64().to_ne_bytes();
+                let bytes = block.to_ne_bytes();
                 let tmp_str = std::str::from_utf8(&bytes).unwrap();
 
                 for ch in tmp_str.chars() {
@@ -812,9 +776,8 @@ fn main() {
         flag_show_dbg = true;
     }
 
-    let mut stack: VecDeque<Number> = VecDeque::new();
-    let mut call_stack: Vec<CallFrame> = Vec::new();
-    let mut allocation_array: VecDeque<Vec<Number>> = VecDeque::new();
+    let mut stack: VecDeque<u64> = VecDeque::new();
+    let mut allocation_array: VecDeque<Vec<u64>> = VecDeque::new();
 
     let mut native_procedures: NativeProceduresMap = HashMap::new();
 
@@ -833,7 +796,6 @@ fn main() {
                 &procedures,
                 &mut stack,
                 0,
-                &mut call_stack,
                 &native_procedures,
                 &mut allocation_array,
             );
