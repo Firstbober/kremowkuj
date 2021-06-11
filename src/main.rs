@@ -1,69 +1,9 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::env;
-use std::fs::File;
-use std::io::{self, BufRead};
-use std::path::Path;
+use std::fs;
 use std::process::exit;
-
-#[derive(Copy, Clone, Debug)]
-enum Instruction {
-    // Stack
-    Pchnij(u64),
-    Usun,
-    ZmiennaK(u64),
-    ZmiennaU(u64),
-
-    // Arithemtics
-    DodajC,
-    DodajZ,
-
-    OdejmC,
-    OdejmZ,
-
-    MnozC,
-    MnozZ,
-
-    DzielC,
-    DzielZ,
-
-    ResztaC,
-    ResztaZ,
-
-    JakoCZ,
-    JakoZC,
-
-    // Comparisons
-    NieL,
-    Rowne,
-    RowneZ,
-
-    MniejC,
-    MniejZ,
-
-    MNrowC,
-    MNrowZ,
-
-    // Bitwise operations
-    NieB,
-    I,
-    Lub,
-    XLub,
-    PrzesunL,
-    PrzesunR,
-
-    // PC register manipulation
-    IdzDo(u64),
-    IdzDoZe(u64),
-    IdzDoNz(u64),
-    Wywolaj(u64),
-    Wroc,
-    Stop,
-
-    // Interpreter communication
-    Nat(u64),
-    BrakOperacji,
-}
+use libkrem::parse::Instruction;
 
 #[repr(u64)]
 enum ReservedNativeProcedures {
@@ -93,255 +33,7 @@ struct Procedure {
     code: Vec<Instruction>,
 }
 
-fn read_lines<P>(filename: P) -> io::Result<io::Lines<io::BufReader<File>>>
-where
-    P: AsRef<Path>,
-{
-    let file = File::open(filename)?;
-    Ok(io::BufReader::new(file).lines())
-}
-
 type NativeProceduresMap = HashMap<u64, Box<dyn Fn(&mut VecDeque<u64>, &mut VecDeque<Vec<u64>>)>>;
-
-fn resolve_number(number: &str, interpret_as_dec: bool) -> Result<u64, &str> {
-    let mut number = number.to_owned();
-
-    let mut read_as_dec = interpret_as_dec;
-
-    if number.starts_with("d") {
-        read_as_dec = true;
-        number.remove(0);
-    } else if number.starts_with("x") {
-        read_as_dec = false;
-        number.remove(0);
-    }
-
-    let res;
-
-    if read_as_dec {
-        res = number.parse::<u64>();
-    } else {
-        res = u64::from_str_radix(number.as_str(), 16);
-    }
-
-    match res {
-        Ok(num) => Ok(num),
-        Err(_) => Err("Number is not an integer"),
-    }
-}
-
-fn resolve_num_err(line: String, number: &str, interpret_as_dec: bool) -> u64 {
-    match resolve_number(number, interpret_as_dec) {
-        Ok(num) => num,
-        Err(_) => {
-            println!(
-                "Error:\n\t{}\n\t^\n\tThis instructions requires valid number. Got {}",
-                line, number
-            );
-            exit(1);
-        }
-    }
-}
-
-fn get_procedures(path: &str) -> Vec<Procedure> {
-    let read_lines_res = read_lines(path);
-
-    if read_lines_res.is_err() {
-        println!("Error: Invalid path");
-        exit(1);
-    }
-
-    let mut procedures: Vec<Procedure> = Vec::new();
-
-    let mut procedure_name: String = "".to_owned();
-    let mut procedure_index: u64 = 0;
-    let mut procedure_param_count: u64 = 0;
-    let mut instructions: Vec<Instruction> = Vec::new();
-
-    let mut flag_is_procedure = false;
-
-    for line in read_lines_res.unwrap() {
-        let line = line.unwrap();
-
-        if line.is_empty() {
-            continue;
-        }
-
-        let mut master_split: Vec<&str> =
-            line.split(";").nth(0).unwrap().trim().split(" ").collect();
-
-        let instruction = master_split[0];
-
-        if instruction.is_empty() {
-            continue;
-        }
-
-        match instruction {
-            "@Procedura" => {
-                master_split.drain(0..1);
-
-                if master_split.len() < 3 {
-                    println!("Error:\n\t{}\n\t^\n\t@Procedura requires minimum of three parameters. Got only {}", line, master_split.len());
-                    exit(1);
-                }
-
-                let index = match resolve_number(master_split[0], false) {
-                    Ok(num) => num,
-                    Err(_) => {
-                        println!(
-                            "Error:\n\t{}\n\t^\n\t@Procedura requires valid numer. Got {}",
-                            line, master_split[0]
-                        );
-                        exit(1);
-                    }
-                };
-
-                let cloned_ms = master_split.clone();
-                let parameter_count = match resolve_number(cloned_ms.last().unwrap(), true) {
-                    Ok(num) => num,
-                    Err(_) => {
-                        println!(
-                            "Error:\n\t{}\n\t^\n\t@Procedura requires valid numer. Got {}",
-                            line,
-                            cloned_ms.last().unwrap()
-                        );
-                        exit(1);
-                    }
-                };
-
-                master_split.remove(0);
-                master_split.remove(master_split.len() - 1);
-
-                let mut name = master_split.join(" ");
-                name.remove(0);
-                name.remove(name.len() - 1);
-                name = name.replace("\\\"", "\"");
-
-                if name.is_empty() {
-                    println!("Error:\n\t{}\n\t^\n\t@Procedura requires name", line);
-                    exit(1);
-                }
-
-                let mut reserved_index = false;
-
-                for procedure in procedures.as_slice() {
-                    if procedure.index == index {
-                        reserved_index = true;
-                    }
-                }
-
-                if reserved_index {
-                    println!(
-                        "Error:\n\t{}\n\t^\n\tIndex for this procedure is already in use",
-                        line
-                    );
-                    exit(1);
-                }
-
-                procedure_name = name;
-                procedure_index = index;
-                procedure_param_count = parameter_count;
-
-                flag_is_procedure = true;
-                continue;
-            }
-            "WRÓĆ" => {
-                flag_is_procedure = false;
-
-                instructions.push(Instruction::Wroc);
-                let cloned_instructions = instructions.clone();
-
-                procedures.push(Procedure {
-                    index: procedure_index,
-                    name: procedure_name.to_owned(),
-                    parameter_count: procedure_param_count,
-                    code: cloned_instructions,
-                });
-                instructions.clear();
-            }
-
-            _ => {}
-        }
-
-        if flag_is_procedure {
-            let instr: Instruction = match instruction {
-                // Stack
-                "PCHNIJ" => {
-                    Instruction::Pchnij(resolve_num_err(line.clone(), master_split[1], false))
-                }
-                "USUŃ" => Instruction::Usun,
-                "ZMIENNA.K" => {
-                    Instruction::ZmiennaK(resolve_num_err(line.clone(), master_split[1], false))
-                }
-                "ZMIENNA.U" => {
-                    Instruction::ZmiennaU(resolve_num_err(line.clone(), master_split[1], false))
-                }
-
-                // Arithemtics
-                "DODAJ.C" => Instruction::DodajC,
-                "DODAJ.Z" => Instruction::DodajZ,
-
-                "ODEJM.C" => Instruction::OdejmC,
-                "ODEJM.Z" => Instruction::OdejmZ,
-
-                "MNÓŻ.C" => Instruction::MnozC,
-                "MNÓŻ.Z" => Instruction::MnozZ,
-
-                "DZIEL.C" => Instruction::DzielC,
-                "DZIEL.Z" => Instruction::DzielZ,
-
-                "RESZTA.C" => Instruction::ResztaC,
-                "RESZTA.Z" => Instruction::ResztaZ,
-
-                "JAKO.CZ" => Instruction::JakoCZ,
-                "JAKO.ZC" => Instruction::JakoZC,
-
-                // Comparisons
-                "NIE.L" => Instruction::NieL,
-                "RÓWNE" => Instruction::Rowne,
-                "RÓWNE.Z" => Instruction::RowneZ,
-
-                "MNIEJ.C" => Instruction::MniejC,
-                "MNIEJ.Z" => Instruction::MniejZ,
-
-                "MNRÓW.C" => Instruction::MNrowC,
-                "MNRÓW.Z" => Instruction::MNrowZ,
-
-                // Bitwise operations
-                "NIE.B" => Instruction::NieB,
-                "I" => Instruction::I,
-                "LUB" => Instruction::Lub,
-                "XLUB" => Instruction::XLub,
-                "PRZESUŃ.L" => Instruction::PrzesunL,
-                "PRZESUŃ.R" => Instruction::PrzesunR,
-
-                // PC register manipulation
-                "IDŹDO" => {
-                    Instruction::IdzDo(resolve_num_err(line.clone(), master_split[1], false))
-                }
-                "IDŹDO.ZE" => {
-                    Instruction::IdzDoZe(resolve_num_err(line.clone(), master_split[1], false))
-                }
-                "IDŹDO.NZ" => {
-                    Instruction::IdzDoNz(resolve_num_err(line.clone(), master_split[1], false))
-                }
-                "WYWOŁAJ" => {
-                    Instruction::Wywolaj(resolve_num_err(line.clone(), master_split[1], false))
-                }
-                "STOP" => Instruction::Stop,
-
-                // Interpreter communication
-                "NAT" => Instruction::Nat(resolve_num_err(line.clone(), master_split[1], false)),
-
-                _ => Instruction::BrakOperacji,
-            };
-
-            instructions.push(instr);
-        }
-    }
-
-    procedures
-}
 
 macro_rules! cvm_arithmetics_u64 {
     ($stack:expr, $op:tt) => {
@@ -362,8 +54,8 @@ macro_rules! cvm_arithmetics_f64 {
 }
 
 fn execute_procedure(
-    procedure: &Procedure,
-    procedures: &Vec<Procedure>,
+    procedure: &libkrem::parse::Procedure,
+    procedures: &VecDeque<libkrem::parse::Procedure>,
     stack: &mut VecDeque<u64>,
     bottom: u64,
     native_procedures: &NativeProceduresMap,
@@ -504,12 +196,12 @@ fn execute_procedure(
                 let y = stack.pop_back().unwrap();
                 let x = stack.pop_back().unwrap();
                 stack.push_back(x << y);
-            },
+            }
             Instruction::PrzesunR => {
                 let y = stack.pop_back().unwrap();
                 let x = stack.pop_back().unwrap();
                 stack.push_back(x >> y);
-            },
+            }
 
             // PC register manipulation
             Instruction::IdzDo(new_pc) => {
@@ -533,7 +225,7 @@ fn execute_procedure(
                 }
             }
             Instruction::Wywolaj(proc_idx) => {
-                let mut new_proc: Option<&Procedure> = None;
+                let mut new_proc: Option<&libkrem::parse::Procedure> = None;
 
                 for procedure in procedures {
                     if procedure.index == proc_idx {
@@ -581,7 +273,7 @@ fn execute_procedure(
 
                 native_procedures.get(&nat_proc).unwrap()(stack, allocation_array);
             }
-            Instruction::BrakOperacji => unimplemented!()
+            Instruction::BrakOperacji => unimplemented!(),
         }
     }
 
@@ -633,10 +325,7 @@ fn register_natproc_io(native_procedures: &mut NativeProceduresMap) {
         native_procedures,
         ReservedNativeProcedures::PutU as u64,
         |stack, _| {
-            print!(
-                "{}",
-                char::from_u32(peek(stack, 0) as u32).unwrap()
-            );
+            print!("{}", char::from_u32(peek(stack, 0) as u32).unwrap());
         }
     );
 
@@ -785,14 +474,32 @@ fn main() {
     register_natproc_memory(&mut native_procedures);
     register_natproc_strings(&mut native_procedures);
 
-    let procedures = get_procedures(args[1].as_str());
+    let content = fs::read_to_string(args[1].as_str()).unwrap();
+    let content = content.as_str();
+
+    let cvma_file = libkrem::parse::read_from_string(content);
+
+    if cvma_file.errors.len() > 0 {
+        libkrem::error_print::print_errors(
+            "parsing error",
+            args[1].as_str(),
+            content,
+            cvma_file.errors,
+        );
+        exit(1);
+    }
+
+    let procedures = &cvma_file.procedures;
     let mut has_main_procedure = false;
 
-    for procedure in procedures.as_slice() {
+    println!("{:?}", &cvma_file.language_version);
+
+    for procedure in procedures.clone() {
+        println!("{:?}", procedure);
         if procedure.index == 0 {
             has_main_procedure = true;
             execute_procedure(
-                procedure,
+                &procedure,
                 &procedures,
                 &mut stack,
                 0,
