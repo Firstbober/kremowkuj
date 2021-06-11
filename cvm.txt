@@ -110,8 +110,7 @@ zasoby.
 Podczas czytania instrukcji mają znaczenie dwie zmienne:
  - Proc, czyli obecnie wykonywana procedura
  - PC, czyli "licznik programu".
-PC wskazuje obecną pozycję w kodzie procedury, i z każdą instrukcją (oprócz tych
-z rodziny IDŹDO) zwiększa się o 1.
+PC wskazuje obecną pozycję w kodzie procedury, i z każdą instrukcją zwiększa się o 1.
 
 Skakanie po kodzie jest opisane w tablicy opkodów.
 
@@ -304,10 +303,10 @@ WYWOŁAJ p - wywołaj procedurę
   PushCall()
   Proc = GetProc(p)
   PC = 0
-  Bottom = Bottom + Proc.ParameterCount
+  Bottom = Len - Proc.ParameterCount
 WRÓĆ 0 - wróć do wywołującej procedury
   f = PopCall()
-  while Len > Bottom  ; zostawia pierwszy argument na stosie
+  while Len > Bottom + 1 ; zostawia pierwszy argument na stosie
     Pop()
   Proc = f.Proc
   PC = f.PC

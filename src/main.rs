@@ -1,9 +1,9 @@
+use libkrem::parse::Instruction;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::env;
 use std::fs;
 use std::process::exit;
-use libkrem::parse::Instruction;
 
 #[repr(u64)]
 enum ReservedNativeProcedures {
@@ -37,9 +37,11 @@ type NativeProceduresMap = HashMap<u64, Box<dyn Fn(&mut VecDeque<u64>, &mut VecD
 
 macro_rules! cvm_arithmetics_u64 {
     ($stack:expr, $op:tt) => {
-        let y = $stack.pop_back().unwrap();
-        let x = $stack.pop_back().unwrap();
-        $stack.push_back(x $op y);
+        unsafe {
+            let y = std::mem::transmute::<u64, i64>($stack.pop_back().unwrap());
+            let x = std::mem::transmute::<u64, i64>($stack.pop_back().unwrap());
+            $stack.push_back(std::mem::transmute::<i64, u64>(x $op y));
+        }
         ()
     };
 }
@@ -76,6 +78,7 @@ fn execute_procedure(
             }
             Instruction::Usun => drop(stack.pop_back()),
             Instruction::ZmiennaK(index) => {
+                println!("{:?}, {}", stack, bottom);
                 stack.push_back(stack[(bottom + index) as usize]);
             }
             Instruction::ZmiennaU(index) => {
@@ -119,11 +122,11 @@ fn execute_procedure(
                 cvm_arithmetics_f64!(stack, %);
             }
 
-            Instruction::JakoCZ => {
-                let num = stack.pop_back().unwrap();
+            Instruction::JakoCZ => unsafe {
+                let num = std::mem::transmute::<u64, i64>(stack.pop_back().unwrap());
 
                 stack.push_back((num as f64).to_bits());
-            }
+            },
             Instruction::JakoZC => {
                 let num = stack.pop_back().unwrap();
 
@@ -131,44 +134,44 @@ fn execute_procedure(
             }
 
             // Comparisons
-            Instruction::NieL => {
-                let x = stack.pop_back().unwrap();
+            Instruction::NieL => unsafe {
+                let x = std::mem::transmute::<u64, i64>(stack.pop_back().unwrap());
                 if x == 0 {
                     stack.push_back(1);
                 } else {
                     stack.push_back(0);
                 }
-            }
-            Instruction::Rowne => {
-                let y = stack.pop_back().unwrap();
-                let x = stack.pop_back().unwrap();
+            },
+            Instruction::Rowne => unsafe {
+                let y = std::mem::transmute::<u64, i64>(stack.pop_back().unwrap());
+                let x = std::mem::transmute::<u64, i64>(stack.pop_back().unwrap());
                 stack.push_back((x == y) as u64);
-            }
+            },
             Instruction::RowneZ => {
                 let y = f64::from_bits(stack.pop_back().unwrap());
                 let x = f64::from_bits(stack.pop_back().unwrap());
                 stack.push_back((x == y) as u64);
             }
 
-            Instruction::MniejC => {
-                let y = stack.pop_back().unwrap();
-                let x = stack.pop_back().unwrap();
+            Instruction::MniejC => unsafe {
+                let y = std::mem::transmute::<u64, i64>(stack.pop_back().unwrap());
+                let x = std::mem::transmute::<u64, i64>(stack.pop_back().unwrap());
                 stack.push_back((x < y) as u64);
-            }
+            },
             Instruction::MniejZ => {
                 let y = stack.pop_back().unwrap();
                 let x = stack.pop_back().unwrap();
                 stack.push_back((x < y) as u64);
             }
 
-            Instruction::MNrowC => {
-                let y = stack.pop_back().unwrap();
-                let x = stack.pop_back().unwrap();
+            Instruction::MNrowC => unsafe {
+                let y = std::mem::transmute::<u64, i64>(stack.pop_back().unwrap());
+                let x = std::mem::transmute::<u64, i64>(stack.pop_back().unwrap());
                 stack.push_back((x <= y) as u64);
-            }
+            },
             Instruction::MNrowZ => {
-                let y = stack.pop_back().unwrap();
-                let x = stack.pop_back().unwrap();
+                let y = f64::from_bits(stack.pop_back().unwrap());
+                let x = f64::from_bits(stack.pop_back().unwrap());
                 stack.push_back((x <= y) as u64);
             }
 
@@ -205,12 +208,10 @@ fn execute_procedure(
 
             // PC register manipulation
             Instruction::IdzDo(new_pc) => {
-                pc -= 1;
                 pc = new_pc;
             }
             Instruction::IdzDoZe(new_pc) => {
                 let x = stack.pop_back().unwrap();
-                pc -= 1;
 
                 if x == 0 {
                     pc = new_pc;
@@ -218,7 +219,6 @@ fn execute_procedure(
             }
             Instruction::IdzDoNz(new_pc) => {
                 let x = stack.pop_back().unwrap();
-                pc -= 1;
 
                 if x != 0 {
                     pc = new_pc;
@@ -243,7 +243,7 @@ fn execute_procedure(
                             new_proc,
                             procedures,
                             stack,
-                            bottom + new_proc.parameter_count,
+                            (stack.len() - (new_proc.parameter_count as usize)) as u64,
                             native_procedures,
                             allocation_array,
                         );
@@ -277,10 +277,8 @@ fn execute_procedure(
         }
     }
 
-    if bottom != 0 {
-        //pop_call(call_stack);
-
-        while stack.len() > bottom as usize {
+    if procedure.index != 0 {
+        while stack.len() > (bottom + 1) as usize {
             stack.pop_back();
         }
     }
@@ -492,10 +490,7 @@ fn main() {
     let procedures = &cvma_file.procedures;
     let mut has_main_procedure = false;
 
-    println!("{:?}", &cvma_file.language_version);
-
     for procedure in procedures.clone() {
-        println!("{:?}", procedure);
         if procedure.index == 0 {
             has_main_procedure = true;
             execute_procedure(

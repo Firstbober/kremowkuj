@@ -1,10 +1,31 @@
 @CVMA 1
 @Procedura 0 "main" 0
-
-PCHNIJ 3fe0000000000000
-PCHNIJ 3fe0000000000000
-DODAJ.Z
-NAT 01
-
+; Equality - var 0
+PCHNIJ d1
+PCHNIJ d2
+RÓWNE  ; should be 0
+; Equality, float - var 1
+PCHNIJ FFF8000000000000  ; NaN
+PCHNIJ FFF8000000000000  ; NaN
+RÓWNE.Z  ; should be 0
+; Less than, integer 1 - var 2
+PCHNIJ d1
+PCHNIJ d2
+MNIEJ.C  ; should be 1
+; Less than, integer 2 - var 3
+PCHNIJ FFFFFFFFFFFFFFFB  ; -5
+PCHNIJ 0
+MNIEJ.C  ; should be 1
+; Less than or equal to, integer 1 - var 4
+PCHNIJ d1
+PCHNIJ d1
+MNRÓW.C  ; should be 1
+; Less than, float - var 5
+PCHNIJ FFF0000000000000  ; -∞
+PCHNIJ 7FF0000000000000  ; ∞
+MNIEJ.Z  ; should be 1
+; Inversion - var 6
+PCHNIJ 1234
+NIE.L  ; should be 0
 STOP
 WRÓĆ
